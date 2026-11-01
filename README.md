@@ -16,24 +16,24 @@ Source ──► Approval (manual) ──► Build (CodeBuild)
 
 ## What's in this repo
 
-| File                   | Purpose                                                                                                            |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `pipeline.yaml`        | The CloudFormation template (the deliverable)                                                                      |
-| `buildspec.yml`        | CodeBuild steps: install Python 3.12 and pytest, run the tests, package `rectangle.pyz`, run it once as a check     |
-| `rectangle/`           | The app: `area`, `perimeter`, and `diagonal` of a rectangle, plus a command-line entry point                       |
-| `tests/`               | pytest tests                                                                                                       |
-| `requirements-dev.txt` | pytest, the only dependency                                                                                        |
+| File                   | Purpose                                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `pipeline.yaml`        | The CloudFormation template (the deliverable)                                                                   |
+| `buildspec.yml`        | CodeBuild steps: install Python 3.12 and pytest, run the tests, package `rectangle.pyz`, run it once as a check |
+| `rectangle/`           | The app: `area`, `perimeter`, and `diagonal` of a rectangle, plus a command-line entry point                    |
+| `tests/`               | pytest tests                                                                                                    |
+| `requirements-dev.txt` | pytest, the only dependency                                                                                     |
 
 ## What the template creates
 
-| Resource         | Type                          | Role in the pipeline                                                                                      |
-| ---------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `ArtifactBucket` | `AWS::S3::Bucket`             | Holds the source and build artifacts passed between stages (encrypted, no public access)                  |
-| `ApprovalTopic`  | `AWS::SNS::Topic`             | Emails the maintainer (`MaintainerEmail`) when a change is waiting for review                             |
-| `CodeBuildRole`  | `AWS::IAM::Role`              | Lets CodeBuild write its logs, read and write artifacts, and publish test reports, and nothing else       |
-| `BuildProject`   | `AWS::CodeBuild::Project`     | Runs `buildspec.yml` on the Amazon Linux standard 5.0 image                                               |
-| `PipelineRole`   | `AWS::IAM::Role`              | Lets CodePipeline use the GitHub connection, the artifact bucket, the build project, and the SNS topic    |
-| `Pipeline`       | `AWS::CodePipeline::Pipeline` | Three stages: **Source** → **Approval** (`MaintainerReview`) → **Build** (`TestAndPackage`)               |
+| Resource         | Type                          | Role in the pipeline                                                                                   |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `ArtifactBucket` | `AWS::S3::Bucket`             | Holds the source and build artifacts passed between stages (encrypted, no public access)               |
+| `ApprovalTopic`  | `AWS::SNS::Topic`             | Emails the maintainer (`MaintainerEmail`) when a change is waiting for review                          |
+| `CodeBuildRole`  | `AWS::IAM::Role`              | Lets CodeBuild write its logs, read and write artifacts, and publish test reports, and nothing else    |
+| `BuildProject`   | `AWS::CodeBuild::Project`     | Runs `buildspec.yml` on the Amazon Linux standard 5.0 image                                            |
+| `PipelineRole`   | `AWS::IAM::Role`              | Lets CodePipeline use the GitHub connection, the artifact bucket, the build project, and the SNS topic |
+| `Pipeline`       | `AWS::CodePipeline::Pipeline` | Three stages: **Source** → **Approval** (`MaintainerReview`) → **Build** (`TestAndPackage`)            |
 
 Details worth knowing:
 
@@ -45,12 +45,12 @@ Details worth knowing:
 
 You need a CodeConnections connection to GitHub in status **Available** (Developer Tools console → **Settings → Connections**).
 
-| Parameter         | Value                                                                    |
-| ----------------- | ------------------------------------------------------------------------ |
-| `ConnectionArn`   | The connection's ARN                                                     |
+| Parameter         | Value                                                                           |
+| ----------------- | ------------------------------------------------------------------------------- |
+| `ConnectionArn`   | The connection's ARN                                                            |
 | `RepositoryId`    | `owner/repo` to build. Default: `bucky-badger-gesmer/seis616-delivery-pipeline` |
-| `BranchName`      | Default: `main`                                                          |
-| `MaintainerEmail` | Who gets the review emails                                               |
+| `BranchName`      | Default: `main`                                                                 |
+| `MaintainerEmail` | Who gets the review emails                                                      |
 
 ```
 aws cloudformation create-stack --region us-east-1 \
@@ -181,3 +181,47 @@ $ aws s3 cp s3://<artifact bucket>/seis616-pipeline/BuildOutpu/UCmUX5e build-out
 $ unzip build-output.zip && python3 rectangle.pyz 3 4
 area=12.0 perimeter=14.0 diagonal=5.0
 ```
+
+### Test 3: documentation-only pushes don't start a run
+
+I pushed this README by itself (`6db9308`, only `README.md` changed). No new run appeared. The list still shows just the two runs above:
+
+```
+$ aws codepipeline list-pipeline-executions --pipeline-name seis616-pipeline ...
+|  e460dcae-ee18-43e8-a252-b04d85fd83cb |  Succeeded |  WebhookV2      |  6fbc395634461cc301252b8866b85a2ffcb6e274  |
+|  acb33a38-11aa-4a5c-95b3-7b1565ddfe27 |  Failed    |  CreatePipeline |  192d80e82423ad8035dc16330deca35b8bdfc0df  |
+```
+
+## 3. Tear it down
+
+The stack can't delete a bucket that still holds artifacts, and CodeBuild creates a log group and a test report group that the stack doesn't own. Remove all of them:
+
+```
+BUCKET=$(aws cloudformation describe-stacks --stack-name seis616-pipeline \
+  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactBucketName`].OutputValue' --output text)
+aws s3 rm s3://$BUCKET --recursive
+aws cloudformation delete-stack --stack-name seis616-pipeline
+aws cloudformation wait stack-delete-complete --stack-name seis616-pipeline
+aws codebuild delete-report-group --delete-reports \
+  --arn arn:aws:codebuild:us-east-1:<account>:report-group/seis616-pipeline-build-pytest-reports
+aws logs delete-log-group --log-group-name /aws/codebuild/seis616-pipeline-build
+```
+
+Deleting the topic doesn't always remove its email subscription right away. If `aws sns list-subscriptions` still shows it, remove it with `aws sns unsubscribe`.
+
+### How I verified the teardown
+
+After running the commands above, a sweep of the account found nothing left from this project:
+
+```
+-- live stacks:
+-- pipelines:
+-- codebuild projects:
+-- report groups:         0 (after they finished DELETING)
+-- /aws/codebuild log groups:
+-- SNS topics:
+-- SNS subscriptions:     0 (after unsubscribing)
+-- IAM roles matching pipeline/codebuild:
+```
+
+`seis616-pipeline` shows `DELETE_COMPLETE`. The only thing I kept is the GitHub connection, which is free and reusable.

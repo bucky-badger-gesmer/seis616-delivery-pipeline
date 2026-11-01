@@ -1,0 +1,33 @@
+version: 0.2
+
+env:
+  variables:
+    PYTHONDONTWRITEBYTECODE: '1'
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install -r requirements-dev.txt
+  pre_build:
+    commands:
+      - python -m pytest -v --junitxml=reports/junit.xml
+  build:
+    commands:
+      - mkdir -p build dist
+      - cp -r rectangle build/
+      - python -m zipapp build -m 'rectangle.__main__:main' -o dist/rectangle.pyz --compress
+      - python dist/rectangle.pyz 3 4
+
+reports:
+  pytest-reports:
+    files:
+      - junit.xml
+    base-directory: reports
+    file-format: JUNITXML
+
+artifacts:
+  files:
+    - dist/rectangle.pyz
+  discard-paths: yes

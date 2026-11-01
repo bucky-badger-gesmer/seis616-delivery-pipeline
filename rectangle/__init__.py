@@ -1,5 +1,7 @@
 """Rectangle geometry: the app built and tested by the delivery pipeline."""
 
+import math
+
 
 def area(length: float, width: float) -> float:
     _check(length, width)
@@ -9,6 +11,11 @@ def area(length: float, width: float) -> float:
 def perimeter(length: float, width: float) -> float:
     _check(length, width)
     return 2 * (length + width)
+
+
+def diagonal(length: float, width: float) -> float:
+    _check(length, width)
+    return math.hypot(length, width)
 
 
 def _check(length: float, width: float) -> None:

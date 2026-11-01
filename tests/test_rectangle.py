@@ -1,6 +1,6 @@
 import pytest
 
-from rectangle import area, perimeter
+from rectangle import area, diagonal, perimeter
 
 
 def test_area():
@@ -9,6 +9,10 @@ def test_area():
 
 def test_perimeter():
     assert perimeter(3, 4) == 14
+
+
+def test_diagonal():
+    assert diagonal(3, 4) == 5
 
 
 def test_zero_sides():

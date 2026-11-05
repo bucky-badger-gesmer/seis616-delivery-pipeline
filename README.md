@@ -1,227 +1,100 @@
-# Software Delivery Pipeline with Manual Approval
+# Software Delivery Pipeline
 
-SEIS 616 homework. `pipeline.yaml` is a CloudFormation template that builds an automated delivery pipeline from GitHub, CodePipeline, and CodeBuild, with a **manual review stage**. When code is pushed to `main`, the pipeline pulls it, pauses, and emails the maintainer. It builds only after the maintainer approves. A rejected change never reaches the build.
+SEIS 616 CloudFormation homework. `pipeline.yaml` creates a delivery pipeline with GitHub, CodePipeline, and CodeBuild, plus a **manual review stage**. When code is pushed to `main`, the pipeline pauses and emails the maintainer. It builds only after the change is approved.
 
-The pipeline builds the small Python app in this repo (`rectangle/`): it runs the pytest suite and packages the app as a single runnable file, `rectangle.pyz`.
-
-```
-git push (main)
-  │  GitHub connection (CodeConnections)
-  ▼
-Source ──► Approval (manual) ──► Build (CodeBuild)
-              │ SNS email to the maintainer   │ pytest, then zipapp
-              │ waits for approve or reject   ▼
-              ▼ reject stops the run          S3 artifact bucket: rectangle.pyz
-```
-
-## What's in this repo
-
-| File                   | Purpose                                                                                                         |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `pipeline.yaml`        | The CloudFormation template (the deliverable)                                                                   |
-| `buildspec.yml`        | CodeBuild steps: install Python 3.12 and pytest, run the tests, package `rectangle.pyz`, run it once as a check |
-| `rectangle/`           | The app: `area`, `perimeter`, and `diagonal` of a rectangle, plus a command-line entry point                    |
-| `tests/`               | pytest tests                                                                                                    |
-| `requirements-dev.txt` | pytest, the only dependency                                                                                     |
-
-## What the template creates
-
-| Resource         | Type                          | Role in the pipeline                                                                                   |
-| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `ArtifactBucket` | `AWS::S3::Bucket`             | Holds the source and build artifacts passed between stages (encrypted, no public access)               |
-| `ApprovalTopic`  | `AWS::SNS::Topic`             | Emails the maintainer (`MaintainerEmail`) when a change is waiting for review                          |
-| `CodeBuildRole`  | `AWS::IAM::Role`              | Lets CodeBuild write its logs, read and write artifacts, and publish test reports, and nothing else    |
-| `BuildProject`   | `AWS::CodeBuild::Project`     | Runs `buildspec.yml` on the Amazon Linux standard 5.0 image                                            |
-| `PipelineRole`   | `AWS::IAM::Role`              | Lets CodePipeline use the GitHub connection, the artifact bucket, the build project, and the SNS topic |
-| `Pipeline`       | `AWS::CodePipeline::Pipeline` | Three stages: **Source** → **Approval** (`MaintainerReview`) → **Build** (`TestAndPackage`)            |
-
-Details worth knowing:
-
-- **The approval stage comes right after Source,** so nothing is built until a person has reviewed the change. The email includes the commit ID, the commit message, and a link to the commit on GitHub.
-- **Pushes to `main` start the pipeline automatically.** Pushes that change only `README.md` or `docs/` are ignored, so editing documentation doesn't create a run that waits for approval.
-- **GitHub access uses a CodeConnections connection** (the AWS Connector GitHub App), so no personal access token is stored anywhere.
-
-## 1. Deploy the template
-
-You need a CodeConnections connection to GitHub in status **Available** (Developer Tools console → **Settings → Connections**).
-
-| Parameter         | Value                                                                           |
-| ----------------- | ------------------------------------------------------------------------------- |
-| `ConnectionArn`   | The connection's ARN                                                            |
-| `RepositoryId`    | `owner/repo` to build. Default: `bucky-badger-gesmer/seis616-delivery-pipeline` |
-| `BranchName`      | Default: `main`                                                                 |
-| `MaintainerEmail` | Who gets the review emails                                                      |
+The pipeline builds the small Python app in this repo (`rectangle/`): it runs the pytest tests and packages the app as one runnable file, `rectangle.pyz`.
 
 ```
-aws cloudformation create-stack --region us-east-1 \
+git push ──► Source ──► Approval (email, waits) ──► Build (pytest + package)
+```
+
+Each step below can be done in the **AWS console** (in your browser) or with the **AWS CLI** (in a terminal). Pick one.
+
+## 1. Run the template
+
+You need a GitHub connection in us-east-1 with status **Available**. Find it in the console under **Developer Tools → Settings → Connections**.
+
+### Fill in the values
+
+| Value             | Where to find it                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `ConnectionArn`   | The ARN of your GitHub connection, from the Connections page above.                                  |
+| `RepositoryId`    | The GitHub repo to build, as `owner/name`. Default: `bucky-badger-gesmer/seis616-delivery-pipeline`. |
+| `BranchName`      | The branch to watch. Default: `main`.                                                                |
+| `MaintainerEmail` | The email address that gets review requests.                                                         |
+
+### Option A: AWS console
+
+1. Sign in to the AWS console and set the region to **US East (N. Virginia) us-east-1** in the top right.
+2. Open **CloudFormation** and click **Create stack → With new resources (standard)**.
+3. Choose **Upload a template file**, select `pipeline.yaml`, and click **Next**.
+4. Enter `seis616-pipeline` as the stack name, fill in the values above, and click **Next**.
+5. On the next page, leave the settings as they are. At the bottom, check **I acknowledge that AWS CloudFormation might create IAM resources** and click **Next**.
+6. Review the summary and click **Submit**. Wait until the stack shows **CREATE_COMPLETE** (about 1 minute).
+
+### Option B: AWS CLI
+
+Run this from this repo's folder so `file://pipeline.yaml` can find the template.
+
+```bash
+aws cloudformation create-stack \
+  --region us-east-1 \
   --stack-name seis616-pipeline \
   --template-body file://pipeline.yaml \
   --capabilities CAPABILITY_IAM \
-  --parameters ParameterKey=ConnectionArn,ParameterValue=<connection ARN> \
-               ParameterKey=MaintainerEmail,ParameterValue=<your email>
+  --parameters \
+    ParameterKey=ConnectionArn,ParameterValue=<connection-arn> \
+    ParameterKey=MaintainerEmail,ParameterValue=<your-email>
 aws cloudformation wait stack-create-complete --region us-east-1 --stack-name seis616-pipeline
 ```
 
-`CAPABILITY_IAM` is required because the template creates two IAM roles. In the console, tick the IAM acknowledgement on the last page.
+`CAPABILITY_IAM` (the checkbox in step 5 of the console option) is needed because the template creates IAM roles for CodePipeline and CodeBuild.
 
-Then open the **"AWS Notification - Subscription Confirmation"** email and click **Confirm subscription**. Until you do, approval emails aren't delivered.
+### Confirm the email subscription
 
-## 2. Review a change
+Open the **AWS Notification - Subscription Confirmation** email and click **Confirm subscription**. Review emails aren't delivered until you do.
 
-1. Push a commit to `main`. The pipeline starts and stops at **Approval**.
-2. The maintainer gets an **"APPROVAL NEEDED"** email with the commit details and a link to the review page.
-3. In the CodePipeline console, click **Review** on the Approval stage, then **Approve** or **Reject**. Or from the CLI:
+## 2. Verify it worked
 
-   ```
-   aws codepipeline get-pipeline-state --name seis616-pipeline \
-     --query 'stageStates[?stageName==`Approval`].actionStates[0].latestExecution.token' --output text
-   aws codepipeline put-approval-result --pipeline-name seis616-pipeline \
-     --stage-name Approval --action-name MaintainerReview --token <token> \
-     --result summary='Looks good',status=Approved
-   ```
+1. Push a commit to `main`. The pipeline starts and stops at the **Approval** stage. (Pushes that change only `README.md` or `docs/` don't start the pipeline.)
+2. The maintainer gets an **APPROVAL NEEDED** email with the commit ID, the commit message, and a link to the commit on GitHub.
+3. Approve or reject the change:
+   - **Console:** Open **CodePipeline → seis616-pipeline**, click **Review** on the Approval stage, then **Approve** or **Reject**.
+   - **CLI:**
 
-4. **Approved:** the Build stage runs the tests and stores `rectangle.pyz` in the artifact bucket. **Rejected:** the run stops as `Failed` and Build never runs.
+     ```bash
+     TOKEN=$(aws codepipeline get-pipeline-state --region us-east-1 --name seis616-pipeline \
+       --query "stageStates[?stageName=='Approval'].actionStates[0].latestExecution.token" --output text)
+     aws codepipeline put-approval-result --region us-east-1 --pipeline-name seis616-pipeline \
+       --stage-name Approval --action-name MaintainerReview --token $TOKEN \
+       --result summary='Looks good',status=Approved
+     ```
 
-## How I verified it
-
-I deployed the template from its GitHub copy as stack `seis616-pipeline` in us-east-1 and tested both outcomes of the review stage. The outputs below are trimmed; full command output is in my verification log.
-
-### Stack created
-
-`CREATE_COMPLETE` on the first attempt, with all six resources:
-
-```
-$ aws cloudformation describe-stack-resources --stack-name seis616-pipeline \
-    --query 'StackResources[].[LogicalResourceId,ResourceType,ResourceStatus]' --output table
-|  ApprovalTopic |  AWS::SNS::Topic              |  CREATE_COMPLETE  |
-|  ArtifactBucket|  AWS::S3::Bucket              |  CREATE_COMPLETE  |
-|  BuildProject  |  AWS::CodeBuild::Project      |  CREATE_COMPLETE  |
-|  CodeBuildRole |  AWS::IAM::Role               |  CREATE_COMPLETE  |
-|  Pipeline      |  AWS::CodePipeline::Pipeline  |  CREATE_COMPLETE  |
-|  PipelineRole  |  AWS::IAM::Role               |  CREATE_COMPLETE  |
-```
-
-### Test 1: a rejected change never builds
-
-Creating the pipeline starts a run on the latest commit. It stopped at Approval with Build untouched:
-
-```
-$ aws codepipeline get-pipeline-state --name seis616-pipeline \
-    --query 'stageStates[].{stage:stageName,status:latestExecution.status}' --output table
-|  Source   |  Succeeded   |
-|  Approval |  InProgress  |
-|  Build    |  None        |
-```
-
-The review request carries the commit details, filled in from the Source stage:
-
-```
-"CustomData": "Review commit 192d80e82423ad8035dc16330deca35b8bdfc0df: feat: add rectangle app, buildspec, and delivery pipeline template ...",
-"ExternalEntityLink": "https://github.com/bucky-badger-gesmer/seis616-delivery-pipeline/commit/192d80e82423ad8035dc16330deca35b8bdfc0df"
-```
-
-I rejected it. The run ended as `Failed`, and the build project has no builds at all:
-
-```
-$ aws codepipeline put-approval-result --pipeline-name seis616-pipeline --stage-name Approval \
-    --action-name MaintainerReview --token <token> \
-    --result summary='Rejected for verification: reject path test',status=Rejected
-$ aws codepipeline get-pipeline-state --name seis616-pipeline ...
-|  Source  |  Succeeded |
-|  Approval|  Failed    |  Rejected for verification: reject path test
-|  Build   |  None      |
-$ aws codebuild list-builds-for-project --project-name seis616-pipeline-build
-{ "ids": [] }
-```
-
-### Test 2: an approved change builds
-
-After confirming the email subscription, I pushed a code change (`6fbc395`, adds `diagonal()` and its test). GitHub's webhook started a new run, which paused at Approval:
-
-```
-$ aws codepipeline list-pipeline-executions --pipeline-name seis616-pipeline ...
-|  e460dcae-ee18-43e8-a252-b04d85fd83cb |  InProgress |  WebhookV2      |  6fbc395634461cc301252b8866b85a2ffcb6e274  |
-|  acb33a38-11aa-4a5c-95b3-7b1565ddfe27 |  Failed     |  CreatePipeline |  192d80e82423ad8035dc16330deca35b8bdfc0df  |
-```
-
-The **"APPROVAL NEEDED"** email arrived at the maintainer address. SNS reports every message delivered:
-
-```
-NumberOfMessagesPublished: 2.0
-NumberOfNotificationsDelivered: 2.0
-NumberOfNotificationsFailed: 0.0
-```
-
-I approved it in the console. The pipeline resumed and the build succeeded:
-
-```
-$ aws codepipeline list-action-executions --pipeline-name seis616-pipeline --filter pipelineExecutionId=e460dcae-... ...
-|  TestAndPackage  |  Succeeded |
-|  MaintainerReview|  Succeeded |  Approved by arn:aws:iam::762760349846:user/aaron
-|  Source          |  Succeeded |
-```
-
-Build log, showing Python 3.12 and all tests passing:
-
-```
-platform linux -- Python 3.12.15, pytest-8.4.2, pluggy-1.7.0
-tests/test_rectangle.py::test_area PASSED
-tests/test_rectangle.py::test_perimeter PASSED
-tests/test_rectangle.py::test_diagonal PASSED
-tests/test_rectangle.py::test_zero_sides PASSED
-tests/test_rectangle.py::test_negative_side_rejected PASSED
-============================== 5 passed in 0.02s ===============================
-area=12.0 perimeter=14.0 diagonal=5.0
-```
-
-CodeBuild's test report agrees: 5 succeeded, 0 failed. Finally, I downloaded the build artifact from the pipeline's S3 bucket and ran it:
-
-```
-$ aws s3 cp s3://<artifact bucket>/seis616-pipeline/BuildOutpu/UCmUX5e build-output.zip
-$ unzip build-output.zip && python3 rectangle.pyz 3 4
-area=12.0 perimeter=14.0 diagonal=5.0
-```
-
-### Test 3: documentation-only pushes don't start a run
-
-I pushed this README by itself (`6db9308`, only `README.md` changed). No new run appeared. The list still shows just the two runs above:
-
-```
-$ aws codepipeline list-pipeline-executions --pipeline-name seis616-pipeline ...
-|  e460dcae-ee18-43e8-a252-b04d85fd83cb |  Succeeded |  WebhookV2      |  6fbc395634461cc301252b8866b85a2ffcb6e274  |
-|  acb33a38-11aa-4a5c-95b3-7b1565ddfe27 |  Failed    |  CreatePipeline |  192d80e82423ad8035dc16330deca35b8bdfc0df  |
-```
+4. **Approved:** the Build stage runs the tests and saves `rectangle.pyz` to the artifact bucket. **Rejected:** the run stops as **Failed** and nothing is built.
 
 ## 3. Tear it down
 
-The stack can't delete a bucket that still holds artifacts, and CodeBuild creates a log group and a test report group that the stack doesn't own. Remove all of them:
+The stack can't delete its artifact bucket while files are in it, and CodeBuild creates a log group and a test report group that the stack doesn't delete. Remove all of them:
 
-```
-BUCKET=$(aws cloudformation describe-stacks --stack-name seis616-pipeline \
-  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactBucketName`].OutputValue' --output text)
+```bash
+BUCKET=$(aws cloudformation describe-stacks --region us-east-1 --stack-name seis616-pipeline \
+  --query "Stacks[0].Outputs[?OutputKey=='ArtifactBucketName'].OutputValue" --output text)
 aws s3 rm s3://$BUCKET --recursive
-aws cloudformation delete-stack --stack-name seis616-pipeline
-aws cloudformation wait stack-delete-complete --stack-name seis616-pipeline
-aws codebuild delete-report-group --delete-reports \
-  --arn arn:aws:codebuild:us-east-1:<account>:report-group/seis616-pipeline-build-pytest-reports
-aws logs delete-log-group --log-group-name /aws/codebuild/seis616-pipeline-build
+aws cloudformation delete-stack --region us-east-1 --stack-name seis616-pipeline
+aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name seis616-pipeline
+aws codebuild delete-report-group --region us-east-1 --delete-reports \
+  --arn arn:aws:codebuild:us-east-1:<account-id>:report-group/seis616-pipeline-build-pytest-reports
+aws logs delete-log-group --region us-east-1 --log-group-name /aws/codebuild/seis616-pipeline-build
 ```
 
-Deleting the topic doesn't always remove its email subscription right away. If `aws sns list-subscriptions` still shows it, remove it with `aws sns unsubscribe`.
+If `aws sns list-subscriptions` still shows the email subscription afterward, remove it with `aws sns unsubscribe`.
 
-### How I verified the teardown
+## How I verified it
 
-After running the commands above, a sweep of the account found nothing left from this project:
+I launched `pipeline.yaml` as `seis616-pipeline` in us-east-1 with the CLI.
 
-```
--- live stacks:
--- pipelines:
--- codebuild projects:
--- report groups:         0 (after they finished DELETING)
--- /aws/codebuild log groups:
--- SNS topics:
--- SNS subscriptions:     0 (after unsubscribing)
--- IAM roles matching pipeline/codebuild:
-```
-
-`seis616-pipeline` shows `DELETE_COMPLETE`. The only thing I kept is the GitHub connection, which is free and reusable.
+- **Stack created:** The stack reached **CREATE_COMPLETE** on the first try, with all six resources (artifact bucket, SNS topic, two IAM roles, build project, pipeline).
+- **Rejected change:** Creating the pipeline started a run on commit `192d80e`. It paused at Approval (Source **Succeeded**, Approval **InProgress**, Build not started). I rejected it. The run ended as **Failed**, and `aws codebuild list-builds-for-project` returned no builds.
+- **Approved change:** I pushed commit `6fbc395` (adds `diagonal()` and its test). GitHub started a new run, which paused at Approval, and the **APPROVAL NEEDED** email arrived (SNS: 2 published, 2 delivered, 0 failed). I approved it in the console. The pipeline resumed and the build succeeded: Python 3.12.15, `5 passed`, and the smoke run printed `area=12.0 perimeter=14.0 diagonal=5.0`. I downloaded `rectangle.pyz` from the artifact bucket and it printed the same line locally.
+- **Docs-only push:** Pushing a change to only `README.md` (commit `6db9308`) did not start a run.
+- **Teardown:** I ran the commands above. The stack shows **DELETE_COMPLETE**, and a sweep of the account found no pipelines, build projects, report groups, log groups, SNS topics or subscriptions, or IAM roles left from this project.
